@@ -1,0 +1,16 @@
+name: Installer shell check
+on:
+  push:
+    branches: ["feat/cli-installer"]
+  pull_request:
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate bash syntax
+        run: bash -n install.sh
+      - name: Validate command creation without running installer
+        run: |
+          grep -q 'exec "\$APP/.venv/bin/python"' install.sh
+          grep -q 'APP_QUOTED=' install.sh
