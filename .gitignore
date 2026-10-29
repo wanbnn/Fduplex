@@ -1,0 +1,21 @@
+# Dependências externas
+transcribe.cpp/
+
+# Ambiente virtual Python
+.venv/
+
+# Cache Python
+__pycache__/
+*.py[cod]
+
+# Modelos de IA
+models/
+
+# Arquivos temporários
+*.log
+*.tmp
+
+# Configurações locais
+.env
+.env.*
+!.env.example
