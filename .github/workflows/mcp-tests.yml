@@ -12,7 +12,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install minimal dependencies
-        run: python -m pip install "mcp>=1.10,<3"
+        run: python -m pip install "mcp>=1.10,<2"
       - name: Compile Python code
         run: python -m compileall -q assistant.py fduplex_agent.py fduplex_mcp.py tests
       - name: Unit tests
