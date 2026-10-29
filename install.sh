@@ -14,8 +14,13 @@ command -v git >/dev/null || fail "Git não encontrado (sudo apt install git)"
 command -v python3 >/dev/null || fail "Python 3 não encontrado"
 python3 -c 'import sys; assert sys.version_info >= (3, 10)' || fail "Python 3.10+ necessário"
 
-# Bash run from a checkout vs piped installer.
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# A script streamed through stdin (curl | bash) has no reliable BASH_SOURCE path.
+# Only resolve a source directory when running an actual installer file.
+HERE=""
+SOURCE_FILE="${BASH_SOURCE[0]:-}"
+if [[ -n "$SOURCE_FILE" && -f "$SOURCE_FILE" ]]; then
+  HERE="$(cd -- "$(dirname -- "$SOURCE_FILE")" && pwd -P)"
+fi
 if [[ -f "$HERE/assistant.py" && -f "$HERE/requirements.txt" ]]; then
   APP="$HERE"
 elif [[ -d "$DEST/.git" ]]; then
