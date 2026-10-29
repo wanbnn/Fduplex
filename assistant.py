@@ -270,7 +270,7 @@ class Assistant:
                         return
                     print(text, flush=True)
                     # Sentence-level TTS; use bounded segments rather than speaking markup.
-                    sentences = re.split(r'(?<=[.!?])\\s+', text)
+                    sentences = re.split(r'(?<=[.!?])\s+', text)
                     for sentence in sentences:
                         if epoch != self.epoch:
                             return
@@ -294,7 +294,7 @@ class Assistant:
                 print(token, end='', flush=True)
                 response_parts.append(token)
                 sentence += token
-                if re.search(r'[.!?](?:\\s|$)', sentence) and len(sentence) > 30:
+                if re.search(r'[.!?](?:\s|$)', sentence) and len(sentence) > 30:
                     await self.speech.say(sentence, self.speech.epoch)
                     sentence = ''
             print()
@@ -303,10 +303,10 @@ class Assistant:
             if epoch == self.epoch:
                 self.history.append({'role':'assistant','content':''.join(response_parts)})
         except asyncio.CancelledError:
-            print('\\n[interrompido]')
+            print('\n[interrompido]')
             raise
         except Exception as exc:
-            print('\\nErro LLM:', exc)
+            print('\nErro LLM:', exc)
 
     async def run(self):
         self.loop = asyncio.get_running_loop()
