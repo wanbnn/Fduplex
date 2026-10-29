@@ -20,6 +20,7 @@ import numpy as np
 import sounddevice as sd
 import webrtcvad
 from openai import AsyncOpenAI
+from fduplex_agent import ToolAgent
 
 RATE = 16000
 FRAME_MS = 20
@@ -184,6 +185,7 @@ class Assistant:
         self.chat_task = None
         self.epoch = 0
         self.history = [{'role': 'system', 'content': args.system}]
+        self.agent = ToolAgent(self.client, args.model, args.system, threshold=args.compact_at) if args.mcp else None
         self.mic = None
 
     def queue_partial(self, utterance_id, samples):
@@ -260,20 +262,35 @@ class Assistant:
                 print('Erro ASR:', exc)
 
     async def reply(self, user_text, epoch):
-        # Only completed assistant messages are committed to conversation history.
-        self.history.append({'role':'user', 'content':user_text})
-        response_parts = []
-        sentence = ''
         print('IA: ', end='', flush=True)
         try:
+            if self.agent:
+                async def emit(text):
+                    if epoch != self.epoch:
+                        return
+                    print(text, flush=True)
+                    # Sentence-level TTS; use bounded segments rather than speaking markup.
+                    sentences = re.split(r'(?<=[.!?])\s+', text)
+                    for sentence in sentences:
+                        if epoch != self.epoch:
+                            return
+                        if sentence.strip():
+                            await self.speech.say(sentence, self.speech.epoch)
+                await self.agent.ask(user_text, emit, interrupt=lambda: epoch != self.epoch)
+                return
+            # Legacy chat mode without tools
+            self.history.append({'role':'user', 'content':user_text})
             stream = await self.client.chat.completions.create(
                 model=self.args.model, messages=self.history[-self.args.history:],
                 stream=True, temperature=0.6)
+            response_parts = []
+            sentence = ''
             async for part in stream:
                 if epoch != self.epoch:
                     return
                 token = part.choices[0].delta.content or ''
-                if not token: continue
+                if not token:
+                    continue
                 print(token, end='', flush=True)
                 response_parts.append(token)
                 sentence += token
@@ -294,6 +311,9 @@ class Assistant:
     async def run(self):
         self.loop = asyncio.get_running_loop()
         self.speech.loop = self.loop
+        if self.agent:
+            names = await self.agent.start()
+            print('MCP ferramentas:', ', '.join(names))
         self.mic = Microphone(self.loop, self.queue_utterance, self.queue_partial, self.barge_in,
                               self.args.vad_mode, self.args.threshold, self.args.pause_ms,
                               self.args.partial_ms)
@@ -320,6 +340,8 @@ def parse_args():
     p.add_argument('--pause-ms', type=int, default=520)
     p.add_argument('--partial-ms', type=int, default=1100, help='Intervalo em ms para transcrição parcial (>=700 recomendado)')
     p.add_argument('--history', type=int, default=24)
+    p.add_argument('--mcp', action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument('--compact-at', type=int, default=80000)
     p.add_argument('--system', default='Você está conversando diretamente com uma pessoa por voz, em português brasileiro. Responda ao que ela disse, de forma natural, breve e sem markdown. Não descreva processos de reconhecimento de fala, arquivos de áudio ou transcrições.')
     return p.parse_args()
 

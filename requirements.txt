@@ -4,3 +4,6 @@ sounddevice>=0.4.6
 soundfile>=0.12
 webrtcvad-wheels>=2.0.14
 huggingface_hub>=0.25
+mcp>=1.10,<2
+playwright>=1.50,<2
+tiktoken>=0.9
