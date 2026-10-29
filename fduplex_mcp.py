@@ -146,15 +146,24 @@ def apply_patch(path: str, patch: str) -> str:
 async def run_terminal(command: str, timeout: int = 20) -> dict:
     """Execute an allowlisted program, without a shell, inside the workspace. No pipes or shell expansion."""
     argv = shlex.split(command)
-    allowed_commands = {"pwd", "ls", "cat", "head", "tail", "grep", "rg", "find", "git", "python3", "pytest", "date", "uname", "df", "du", "free", "ps", "whoami"}
-    if not argv or argv[0] not in allowed_commands:
-        raise ValueError("Executable not permitted; configure explicit capability for more.")
-    # Even otherwise harmless executables become dangerous with arbitrary flags.
-    prohibited = {"-exec", "-execdir", "-delete", "--exec", "-c", "-m", "--output", "-o", "--config", "--git-dir", "--work-tree"}
-    if any(arg in prohibited for arg in argv[1:]):
-        raise ValueError("Option disallowed")
-    if argv[0] in {"git", "python3", "pytest", "find"}:
-        raise ValueError("This command requires an explicit trusted terminal extension; read-only tools are available.")
+    # Only metadata commands or strictly scoped file reads are accepted here.
+    metadata_commands = {"pwd", "date", "uname", "df", "free", "whoami"}
+    file_commands = {"ls", "cat", "head", "tail"}
+    if argv[0] not in metadata_commands | file_commands:
+        raise ValueError("Executable not permitted")
+    if argv[0] in metadata_commands and len(argv) != 1:
+        raise ValueError("Arguments disabled for metadata commands")
+    if argv[0] in file_commands:
+        if not 1 <= len(argv) <= 6:
+            raise ValueError("Provide 1 to 5 paths")
+        for argument in argv[1:]:
+            if argument.startswith("-"):
+                raise ValueError("Flags disabled for filesystem commands")
+            target = allowed(str(WORKSPACE / argument), WRITE_ROOTS, must_exist=True)
+            if any(part in DENIED or part.startswith(".env") for part in target.parts):
+                raise ValueError("Protected path")
+            if argv[0] in {"cat", "head", "tail"} and not target.is_file():
+                raise ValueError("Expected file")
     proc = await asyncio.create_subprocess_exec(*argv, cwd=str(WORKSPACE), stdin=asyncio.subprocess.DEVNULL,
                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                                                 env={"PATH": "/usr/bin:/bin", "HOME": str(WORKSPACE), "LANG": "C.UTF-8"})
