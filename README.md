@@ -124,7 +124,7 @@ git clone https://github.com/handy-computer/transcribe.cpp.git
 cmake -S transcribe.cpp -B transcribe.cpp/build -DTRANSCRIBE_HIP=ON -DAMDGPU_TARGETS=gfx1200
 cmake --build transcribe.cpp/build -j "$(nproc)"
 
-./.venv/bin/python -m huggingface_hub download handy-computer/parakeet-ultra-gguf parakeet-ultra-Q8_0.gguf --local-dir models
+./.venv/bin/hf download handy-computer/parakeet-ultra-gguf parakeet-ultra-Q8_0.gguf --local-dir models
 ```
 
 > [!NOTE]
