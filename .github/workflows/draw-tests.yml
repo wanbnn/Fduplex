@@ -1,0 +1,45 @@
+name: Draw mode checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - assistant.py
+      - draw_mode.py
+      - draw_canvas.py
+      - draw_web.html
+      - tests/test_draw_canvas.py
+      - .github/workflows/draw-tests.yml
+  pull_request:
+    paths:
+      - assistant.py
+      - draw_mode.py
+      - draw_canvas.py
+      - draw_web.html
+      - tests/test_draw_canvas.py
+
+jobs:
+  draw:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test tools
+        run: python -m pip install "mcp>=1.10,<2" pytest
+      - name: Check Python syntax
+        run: python -m compileall -q assistant.py draw_mode.py draw_canvas.py tests/test_draw_canvas.py
+      - name: Check canvas JavaScript syntax
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          source = Path("draw_web.html").read_text(encoding="utf-8")
+          match = re.search(r"<script>(.*?)</script>", source, flags=re.DOTALL)
+          assert match, "JavaScript inline não encontrado"
+          Path("/tmp/fduplex-draw.js").write_text(match.group(1), encoding="utf-8")
+          PY
+          node --check /tmp/fduplex-draw.js
+      - name: Check state and localhost canvas server
+        run: python -m pytest -q tests/test_draw_canvas.py

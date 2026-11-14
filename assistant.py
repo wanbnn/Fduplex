@@ -379,6 +379,10 @@ def parse_args():
     p.add_argument('--tts-language', default=os.getenv('TTS_LANGUAGE', 'portuguese'))
     p.add_argument('--tts-voice', default=os.getenv('TTS_VOICE', 'rafael'))
     p.add_argument('--tts-quantize', action=argparse.BooleanOptionalAction, default=False, help='Quantização int8 do Pocket na CPU')
+    p.add_argument('--draw', action='store_true', help='Canvas ao vivo: ASR -> LLM -> MCP, sem TTS')
+    p.add_argument('--draw-interval', type=float, default=1.2, help='Intervalo mínimo entre chamadas ao LLM (segundos)')
+    p.add_argument('--draw-port', type=int, default=0, help='Porta HTTP local do canvas; 0 escolhe automaticamente')
+    p.add_argument('--no-draw-browser', action='store_true', help='Não abrir o canvas automaticamente')
     p.add_argument('--plain', action='store_true', help='Saída simples, sem tela interativa')
     p.add_argument('--list-devices', action='store_true')
     p.add_argument('--mic', type=int)
@@ -397,6 +401,8 @@ def parse_args():
         p.error('MCP não instalado nesta cópia. Use a instalação completa ou --no-mcp.')
     if not 0 < args.speech_probability < 1 or args.start_ms < 64 or args.min_speech_ms < args.start_ms or args.pause_ms < 64:
         p.error('VAD: probabilidade deve estar entre 0 e 1; início >=64 ms, duração mínima >= início, pausa >=64 ms.')
+    if args.draw and (not 0.5 <= args.draw_interval <= 30 or not 0 <= args.draw_port <= 65535):
+        p.error('--draw-interval precisa estar entre 0,5 e 30 s; --draw-port entre 0 e 65535')
     if args.threshold < 0 or not -60 <= args.noise_suppress_db <= 0:
         p.error('RMS deve ser >=0 e supressão deve estar entre -60 e 0 dB.')
     try:
@@ -408,7 +414,12 @@ def parse_args():
 
 if __name__ == '__main__':
     try:
-        asyncio.run(Assistant(parse_args()).run())
+        options = parse_args()
+        if options.draw:
+            from draw_mode import DrawAssistant
+            asyncio.run(DrawAssistant(options, Microphone).run())
+        else:
+            asyncio.run(Assistant(options).run())
     except KeyboardInterrupt:
         print('Encerrado.')
     except Exception as exc:

@@ -10,6 +10,46 @@ português brasileiro. O áudio novo é enviado para a API nativa
 O Parakeet Ultra continua disponível para reconhecimento **por frase** e a
 interface identifica esse modo como offline. Ele não oferece streaming nativo.
 
+## Modo Draw: desenhar fluxogramas falando
+
+O `--draw` ativa uma sessão **ASR → LLM (API OpenAI-compatible) → MCP stdio → canvas SVG**.
+Abre uma página local em `127.0.0.1` e atualiza os nós e conexões conforme chegam
+trechos estáveis do reconhecimento. Os textos provisórios aparecem imediatamente na
+interface; o LLM usa trechos confirmados pelo streaming, com limite de frequência
+para evitar redesenhos a cada hipótese. Em ASR offline, atualiza por frase.
+
+```bash
+# Configurar um modelo com suporte a tool/function calling:
+export OPENAI_BASE_URL=https://sua-api/v1
+export OPENAI_API_KEY=sua-chave
+export OPENAI_MODEL=nome-do-modelo
+fduplex --draw
+
+# Opcional: porta fixa e intervalo mínimo de 2 s entre chamadas
+fduplex --draw --draw-port 8765 --draw-interval 2
+# Para servidores sem browser gráfico:
+fduplex --draw --no-draw-browser --plain
+```
+
+Exemplo de fala: “Começamos com o pedido do cliente, depois validamos o cadastro.
+Se os dados estiverem corretos, aprovamos; caso contrário, pedimos correção.”
+Você pode continuar: “Adicione uma etapa de notificação após aprovação”.
+
+O desenho é incremental: nós e ligações recebem IDs estáveis, e o modelo faz
+patches em vez de substituir tudo. **Não há TTS nem resposta falada**. O LLM
+usa um servidor MCP exclusivo com **somente** `get_canvas` e `update_canvas`;
+a API recebe apenas a ferramenta de atualização, sem terminal ou operações de
+arquivos. Cada sessão salva um JSON em
+`~/.local/state/fduplex/canvases/`. O navegador permite arrastar etapas,
+enquadrar, ampliar e exportar SVG/JSON. A disposição arrastada é visual e não
+altera o grafo persistido. O servidor HTTP aceita apenas conexões locais e
+somente leituras. A API de LLM ainda recebe a transcrição enviada ao modelo.
+
+**Requisitos:** modelo e endpoint compatíveis com chamadas de ferramentas
+OpenAI (`tool_calls`). Os resultados visuais dependem da interpretação
+do modelo e da estabilidade do ASR; não são garantidos sem validação.
+Use `Q` para encerrar e `M` para pausar o microfone no terminal.
+
 ## Instalação no Ubuntu
 
 ```bash
