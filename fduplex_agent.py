@@ -5,6 +5,8 @@ import json
 import os
 import sys
 from contextlib import AsyncExitStack
+from workspace import session_workspace
+from conversation import TURN_STYLE
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -27,13 +29,17 @@ class ToolAgent:
         self.compacted = []
         self.turn_lock = asyncio.Lock()
 
-    async def start(self):
+    async def start(self, errlog=None):
+        workspace = str(session_workspace())
+        environment = dict(os.environ, FDUPLEX_LAUNCH_DIR=workspace, FDUPLEX_WORKSPACE=workspace,
+                           FDUPLEX_READ_ROOTS=workspace, FDUPLEX_WRITE_ROOTS=workspace)
         params = StdioServerParameters(
             command=sys.executable,
             args=[str(__import__("pathlib").Path(__file__).resolve().parent / "fduplex_mcp.py")],
-            env=dict(os.environ),
+            env=environment,
+            cwd=workspace,
         )
-        streams = await self.stack.enter_async_context(stdio_client(params))
+        streams = await self.stack.enter_async_context(stdio_client(params, errlog=errlog or sys.stderr))
         self.session = await self.stack.enter_async_context(ClientSession(*streams))
         await self.session.initialize()
         response = await self.session.list_tools()
@@ -72,7 +78,7 @@ class ToolAgent:
         self.history = [self.history[0], {"role": "system", "content":
                         "Resumo de conversas anteriores:\n" + "\n".join(self.compacted[-3:])[-35000]}] + self.history[cutoff:]
 
-    async def ask(self, utterance, emit, *, interrupt=None):
+    async def ask(self, utterance, emit, *, interrupt=None, preview=None, stream_emit=None, on_tool=None):
         """Stream final response while safely processing tool calls. emit is async function(text)."""
         async with self.turn_lock:
             self.history.append({"role": "user", "content": utterance})
@@ -81,34 +87,50 @@ class ToolAgent:
                 if interrupt and interrupt():
                     return
                 response = await self.client.chat.completions.create(
-                    model=self.model, messages=self.history, tools=self.tools,
+                    model=self.model, messages=self.history + [{"role": "system", "content": TURN_STYLE}], tools=self.tools,
                     tool_choice="auto", stream=True, temperature=0.4)
                 text_parts = []
                 calls = {}
-                async for chunk in response:
-                    if interrupt and interrupt():
-                        await response.close()
-                        return
-                    if not chunk.choices:
-                        continue
-                    delta = chunk.choices[0].delta
-                    if delta.content:
-                        text_parts.append(delta.content)
-                        # Tool calls may happen late in the stream; only speak final content after streaming.
-                    for item in delta.tool_calls or []:
-                        record = calls.setdefault(item.index, {"id": "", "name": "", "arguments": ""})
-                        if item.id:
-                            record["id"] += item.id
-                        if item.function:
-                            record["name"] += item.function.name or ""
-                            record["arguments"] += item.function.arguments or ""
+                cancelled = False
+                try:
+                    async for chunk in response:
+                        if interrupt and interrupt():
+                            return
+                        if not chunk.choices:
+                            continue
+                        delta = chunk.choices[0].delta
+                        if delta.content:
+                            text_parts.append(delta.content)
+                            if stream_emit:
+                                await stream_emit(delta.content)
+                            if preview:
+                                preview("".join(text_parts))
+                            # Tool calls may happen late in the stream; only speak final content after streaming.
+                        for item in delta.tool_calls or []:
+                            record = calls.setdefault(item.index, {"id": "", "name": "", "arguments": ""})
+                            if item.id:
+                                record["id"] += item.id
+                            if item.function:
+                                record["name"] += item.function.name or ""
+                                record["arguments"] += item.function.arguments or ""
+                except asyncio.CancelledError:
+                    cancelled = True
+                    raise
+                finally:
+                    if text_parts and not calls and (cancelled or (interrupt and interrupt())):
+                        self.history.append({'role': 'assistant', 'content': ''.join(text_parts)})
+                    await response.close()
+                if stream_emit:
+                    await stream_emit(None)
                 body = "".join(text_parts)
                 if calls:
+                    if preview:
+                        preview("")
                     request_calls = [{"id": call["id"], "type": "function", "function":
                                      {"name": call["name"], "arguments": call["arguments"]}}
                                      for _, call in sorted(calls.items())]
                     self.history.append({"role": "assistant", "content": body or None, "tool_calls": request_calls})
-                    for call in request_calls:
+                    for call_index, call in enumerate(request_calls):
                         if interrupt and interrupt():
                             return
                         name = call["function"]["name"]
@@ -117,10 +139,17 @@ class ToolAgent:
                             # Prevent model-invented tools from being invoked.
                             if name not in {t["function"]["name"] for t in self.tools}:
                                 raise ValueError("Unknown tool")
+                            if on_tool:
+                                on_tool(name, args)
                             result = await self.session.call_tool(name, args)
                             output = "\n".join(c.text for c in result.content if c.type == "text")
                             if result.isError:
                                 output = "TOOL ERROR: " + output
+                        except asyncio.CancelledError:
+                            for pending in request_calls[call_index:]:
+                                self.history.append({"role": "tool", "tool_call_id": pending["id"],
+                                                     "content": "Interrompido. Resultado não confirmado; não presuma sucesso."})
+                            raise
                         except Exception as exc:
                             output = "TOOL ERROR: " + str(exc)
                         self.history.append({"role": "tool", "tool_call_id": call["id"], "content": output[:20000]})

@@ -1,0 +1,5 @@
+# CPU PyTorch: avoid installing NVIDIA runtimes on this ROCm application.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.15.0+cpu; sys_platform == "linux" and platform_machine == "x86_64"
+pocket-tts==4.0.1
+num2words==0.5.14

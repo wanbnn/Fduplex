@@ -47,9 +47,10 @@ class LocalToolsTests(unittest.TestCase):
         found = server.search_files("efficiency")
         self.assertEqual(found[0]["path"], str(target))
 
-    def test_terminal_disallows_shell(self):
-        with self.assertRaises(ValueError):
-            asyncio.run(server.run_terminal("sh -c whoami"))
+    def test_terminal_executes_shell(self):
+        result = asyncio.run(server.run_terminal("sh -c whoami"))
+        self.assertEqual(result["returncode"], 0)
+        self.assertTrue(result["stdout"].strip())
 
     def test_symlink_escape(self):
         link = self.root / "escape"

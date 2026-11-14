@@ -6,7 +6,6 @@ REF="${FDUPLEX_REF:-main}"
 DEST="${FDUPLEX_INSTALL_DIR:-$HOME/.local/share/fduplex}"
 BIN="$HOME/.local/bin"
 CONFIG="$HOME/.config/fduplex/env"
-WORKSPACE="${FDUPLEX_WORKSPACE:-$HOME/Fduplex-workspace}"
 say() { printf '[Fduplex] %s\n' "$*"; }
 fail() { say "ERRO: $*" >&2; exit 1; }
 
@@ -41,12 +40,21 @@ if [[ ! -x "$APP/.venv/bin/python" ]]; then
 fi
 "$APP/.venv/bin/python" -m pip install -r "$APP/requirements.txt"
 
-mkdir -p "$BIN" "$HOME/.config/fduplex" "$WORKSPACE" "$HOME/Documents"
+# Build against an existing native checkout; no machine-specific path is recorded.
+ASR_SOURCE="${FDUPLEX_TRANSCRIBE_DIR:-$APP/transcribe.cpp}"
+if [[ -f "$ASR_SOURCE/build/transcribe-link.json" ]]; then
+  "$APP/.venv/bin/python" "$APP/build_asr.py" --source "$ASR_SOURCE" --output "$APP/bin/fduplex-asr"
+else
+  say "ASR nativo: compile transcribe.cpp e execute build_asr.py --source /caminho/do/checkout."
+fi
+if [[ "${FDUPLEX_INSTALL_AUDIO:-1}" == "1" ]]; then
+  "$APP/.venv/bin/python" "$APP/setup_audio.py"
+  "$APP/.venv/bin/python" "$APP/setup_tts.py"
+fi
+
+mkdir -p "$BIN" "$HOME/.config/fduplex"
 if [[ ! -f "$CONFIG" ]]; then
   {
-    printf 'FDUPLEX_WORKSPACE=%q\n' "$WORKSPACE"
-    printf 'FDUPLEX_READ_ROOTS=%q\n' "$HOME/Documents:$WORKSPACE"
-    printf 'FDUPLEX_WRITE_ROOTS=%q\n' "$WORKSPACE"
     printf 'OPENAI_BASE_URL=%q\n' "http://localhost:1234/v1"
     printf 'OPENAI_API_KEY=%q\n' "local"
     printf 'OPENAI_MODEL=%q\n' "local-model"
@@ -68,6 +76,7 @@ if [[ -f "$CONFIG" ]]; then
   set +a
 fi
 [[ -x "$APP/.venv/bin/python" ]] || { echo "Reinstale o Fduplex: ambiente Python ausente" >&2; exit 1; }
+export FDUPLEX_LAUNCH_DIR="$PWD"
 cd "$APP"
 exec "$APP/.venv/bin/python" "$APP/assistant.py" "$@"
 LAUNCHER

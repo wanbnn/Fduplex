@@ -14,16 +14,12 @@ from pathlib import Path
 from urllib.parse import quote_plus, urlsplit
 
 from mcp.server.fastmcp import FastMCP
+from workspace import session_workspace
 
 HOME = Path.home()
-WORKSPACE = Path(os.getenv("FDUPLEX_WORKSPACE", str(HOME / "Fduplex-workspace"))).expanduser().resolve()
-WORKSPACE.mkdir(parents=True, exist_ok=True)
-READ_ROOTS = [Path(p).expanduser().resolve() for p in os.getenv(
-    "FDUPLEX_READ_ROOTS", str(HOME / "Documents") + os.pathsep + str(WORKSPACE)
-).split(os.pathsep) if p]
-WRITE_ROOTS = [Path(p).expanduser().resolve() for p in os.getenv(
-    "FDUPLEX_WRITE_ROOTS", str(WORKSPACE)
-).split(os.pathsep) if p]
+WORKSPACE = session_workspace()
+READ_ROOTS = [WORKSPACE]
+WRITE_ROOTS = [WORKSPACE]
 SKILL_ROOT = Path(__file__).resolve().parent / "skills"
 STATE_DIR = Path(os.getenv("FDUPLEX_STATE_DIR", str(WORKSPACE / ".fduplex"))).expanduser().resolve()
 STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -35,7 +31,8 @@ mcp = FastMCP("Fduplex Local Assistant")
 
 
 def allowed(path: str, roots: list[Path], *, must_exist: bool = False) -> Path:
-    p = Path(path).expanduser().resolve(strict=False)
+    p = Path(path).expanduser()
+    p = (p if p.is_absolute() else WORKSPACE / p).resolve(strict=False)
     if not any(p == root or root in p.parents for root in roots):
         raise ValueError("Path outside permitted roots: " + str(p))
     if must_exist and not p.exists():
@@ -142,39 +139,123 @@ def apply_patch(path: str, patch: str) -> str:
     return "\n".join(difflib.unified_diff(original.splitlines(), updated.splitlines(), fromfile=str(p), tofile=str(p)))
 
 
+DESKTOP_APPS = {"firefox", "chromium", "chromium-browser", "google-chrome", "brave-browser",
+                "code", "codium", "gedit", "kate", "mousepad", "gnome-text-editor",
+                "gnome-calculator", "nautilus", "thunar"}
+LAUNCHED_APPS = []
+
+
+def desktop_environment():
+    keys = {"PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "DISPLAY", "WAYLAND_DISPLAY",
+            "XAUTHORITY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "XDG_SESSION_TYPE",
+            "XDG_DATA_DIRS", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CURRENT_DESKTOP",
+            "MOZ_ENABLE_WAYLAND", "QT_QPA_PLATFORM", "SESSION_MANAGER", "GDK_BACKEND"}
+    return {key: value for key, value in os.environ.items() if key in keys}
+
+
 @mcp.tool()
-async def run_terminal(command: str, timeout: int = 20) -> dict:
-    """Execute an allowlisted program, without a shell, inside the workspace. No pipes or shell expansion."""
-    argv = shlex.split(command)
-    # Only metadata commands or strictly scoped file reads are accepted here.
-    metadata_commands = {"pwd", "date", "uname", "df", "free", "whoami"}
-    file_commands = {"ls", "cat", "head", "tail"}
-    if argv[0] not in metadata_commands | file_commands:
-        raise ValueError("Executable not permitted")
-    if argv[0] in metadata_commands and len(argv) != 1:
-        raise ValueError("Arguments disabled for metadata commands")
-    if argv[0] in file_commands:
-        if not 1 <= len(argv) <= 6:
-            raise ValueError("Provide 1 to 5 paths")
-        for argument in argv[1:]:
-            if argument.startswith("-"):
-                raise ValueError("Flags disabled for filesystem commands")
-            target = allowed(str(WORKSPACE / argument), WRITE_ROOTS, must_exist=True)
-            if any(part in DENIED or part.startswith(".env") for part in target.parts):
-                raise ValueError("Protected path")
-            if argv[0] in {"cat", "head", "tail"} and not target.is_file():
-                raise ValueError("Expected file")
-    proc = await asyncio.create_subprocess_exec(*argv, cwd=str(WORKSPACE), stdin=asyncio.subprocess.DEVNULL,
-                                                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                                                env={"PATH": "/usr/bin:/bin", "HOME": str(WORKSPACE), "LANG": "C.UTF-8"})
+async def launch_application(application: str, arguments: list[str] | None = None) -> dict:
+    """Open an installed desktop executable with optional argument strings, e.g. firefox. Returns promptly without waiting for the window to close. For scripts, shell commands and application control, use run_terminal."""
+    import shutil
+    executable = shutil.which(application)
+    if not executable:
+        return {"error": "Aplicativo não instalado: " + application}
+    if not (os.getenv("DISPLAY") or os.getenv("WAYLAND_DISPLAY")):
+        return {"error": "Sessão gráfica indisponível (DISPLAY/WAYLAND_DISPLAY ausentes)."}
+    proc = subprocess.Popen([executable, *(arguments or [])], cwd=str(WORKSPACE), env=desktop_environment(),
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, start_new_session=True)
+    LAUNCHED_APPS[:] = [item for item in LAUNCHED_APPS if item.poll() is None]
+    LAUNCHED_APPS.append(proc)
+    await asyncio.sleep(0.25)
+    code = proc.poll()
+    if code not in (None, 0):
+        return {"error": "Aplicativo encerrou ao iniciar", "application": application, "returncode": code}
+    return {"application": application, "pid": proc.pid,
+            "status": "process_started" if code is None else "launch_request_sent",
+            "note": "Pedido de abertura enviado; a visibilidade da janela não foi verificada."}
+
+
+@mcp.tool()
+async def ping_host(host: str, count: int = 4) -> dict:
+    """Measure actual local network latency with ICMP ping (1–5 packets). Use this for requests such as ping google.com; never invent latency."""
+    import ipaddress
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), min(max(timeout, 1), 30))
-    except asyncio.TimeoutError:
-        proc.kill()
+        ipaddress.ip_address(host)
+    except ValueError:
+        if (len(host) > 253 or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", host)):
+            raise ValueError("Hostname inválido")
+    count = min(max(int(count), 1), 5)
+    proc = await asyncio.create_subprocess_exec(
+        "ping", "-n", "-c", str(count), "-W", "2", "--", host,
+        cwd=str(WORKSPACE), stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), count * 3 + 3)
+    except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+        if proc.returncode is None:
+            proc.kill()
         await proc.communicate()
-        return {"error": "timeout"}
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        return {"error": "Ping excedeu o tempo limite", "host": host}
+    text = stdout.decode(errors="replace")
+    match = re.search(r"= ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+) ms", text)
+    result = {"host": host, "returncode": proc.returncode, "stdout": text,
+              "stderr": stderr.decode(errors="replace")}
+    if match:
+        result.update(min_ms=float(match[1]), avg_ms=float(match[2]), max_ms=float(match[3]))
+    return result
+
+
+@mcp.tool()
+async def run_terminal(command: str, timeout: int = 20, background: bool = False) -> dict:
+    """Execute a real Bash command as the current Linux user, starting in the launch workspace. Supports arguments, pipes, redirects, scripts, installed CLI/desktop tools and shell expansion. Set background=true for persistent apps/services. No command allowlist; actual OS permissions apply. Returns exit status/output or a background PID/log path."""
+    import signal
+    import uuid
+    if not command.strip():
+        raise ValueError("Comando vazio")
+    # Keep simple desktop/ping requests convenient; all other syntax goes to Bash.
+    if not background:
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            argv = []
+        if len(argv) == 1 and argv[0] in DESKTOP_APPS:
+            return await launch_application(argv[0])
+        if len(argv) == 2 and argv[0] == "ping" and re.fullmatch(r"[A-Za-z0-9.:-]+", argv[1]):
+            return await ping_host(argv[1])
+        if len(argv) == 4 and argv[:2] == ["ping", "-c"] and argv[2].isdigit() and re.fullmatch(r"[A-Za-z0-9.:-]+", argv[3]):
+            return await ping_host(argv[3], int(argv[2]))
+    environment = dict(os.environ)
+    if background:
+        log_path = STATE_DIR / ("terminal-" + uuid.uuid4().hex[:12] + ".log")
+        with log_path.open("ab") as output:
+            proc = subprocess.Popen(["/bin/bash", "-c", command], cwd=str(WORKSPACE), env=environment,
+                                    stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+                                    start_new_session=True)
+        LAUNCHED_APPS[:] = [item for item in LAUNCHED_APPS if item.poll() is None]
+        LAUNCHED_APPS.append(proc)
+        return {"pid": proc.pid, "status": "started_in_background", "log": str(log_path), "cwd": str(WORKSPACE)}
+    proc = await asyncio.create_subprocess_exec(
+        "/bin/bash", "-c", command, cwd=str(WORKSPACE), env=environment,
+        stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE, start_new_session=True)
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), min(max(timeout, 1), 300))
+    except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+        # End the foreground command and descendants, including children holding pipe FDs.
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stdout, stderr = await proc.communicate()
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        return {"error": "timeout", "returncode": proc.returncode,
+                "stdout": stdout[:16000].decode(errors="replace"), "stderr": stderr[:4000].decode(errors="replace")}
     return {"returncode": proc.returncode, "stdout": stdout[:16000].decode(errors="replace"),
-            "stderr": stderr[:4000].decode(errors="replace")}
+            "stderr": stderr[:4000].decode(errors="replace"), "cwd": str(WORKSPACE)}
 
 
 def db_connect():

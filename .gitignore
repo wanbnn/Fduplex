@@ -19,3 +19,10 @@ models/
 .env
 .env.*
 !.env.example
+
+# Native worker build artifacts
+bin/
+.pytest_cache/
+
+# Session MCP index
+.fduplex/
